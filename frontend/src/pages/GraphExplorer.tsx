@@ -11,12 +11,26 @@ const NODE_COLORS: Record<string, string> = {
   Certificate: '#ec4899',
   Organization: '#3b82f6',
   LeakRecord: '#ef4444',
+  Port: '#64748b',
+}
+
+// Mapping from Neo4j label (PascalCase) to API entity_type parameter
+const LABEL_TO_API_TYPE: Record<string, string> = {
+  Domain: 'domain',
+  IP: 'ip',
+  Email: 'email',
+  Username: 'username',
+  Certificate: 'certificate',
+  Organization: 'organization',
+  LeakRecord: 'leakrecord',
+  Port: 'port',
 }
 
 const ALL_REL_TYPES = [
   'RESOLVES_TO', 'HAS_SUBDOMAIN', 'REGISTERED_BY', 'BELONGS_TO_ORG',
   'ISSUED_TO', 'APPEARS_IN', 'HAS_USERNAME', 'BELONGS_TO_ASN',
   'REVERSE_DNS', 'NAMESERVER', 'MAIL_EXCHANGE', 'FOUND_IN_REPO',
+  'HAS_PORT',
 ]
 
 const ALL_NODE_TYPES = Object.keys(NODE_COLORS)
@@ -42,10 +56,12 @@ export default function GraphExplorerPage() {
   }
 
   const handleLoadNode = async (entityType: string, value: string) => {
+    // Normalize: accept both Neo4j label ("LeakRecord") and API type ("leakrecord"/"leak")
+    const apiType = LABEL_TO_API_TYPE[entityType] || entityType.toLowerCase()
     const relFilter = activeRelTypes.size < ALL_REL_TYPES.length
       ? Array.from(activeRelTypes)
       : undefined
-    const data = await getNeighbors(entityType, value, depth, relFilter)
+    const data = await getNeighbors(apiType, value, depth, relFilter)
     if (data.nodes) {
       const graphNodes = data.nodes.map((n: any) => ({
         id: n._id,
@@ -99,7 +115,7 @@ export default function GraphExplorerPage() {
 
   const handleNodeDblClick = useCallback(
     async (node: any) => {
-      const label = node._label?.toLowerCase() || 'domain'
+      const label = node._label || 'Domain'
       const value = node.value || node.name || node.fingerprint || node.breach_name
       if (value) {
         await handleLoadNode(label, value)
@@ -185,7 +201,7 @@ export default function GraphExplorerPage() {
               {searchResults.map((r: any, i: number) => (
                 <button
                   key={i}
-                  onClick={() => handleLoadNode(r._label?.toLowerCase(), r.value || r.name)}
+                  onClick={() => handleLoadNode(r._label || 'Domain', r.value || r.name || r.fingerprint || r.breach_name)}
                   className="w-full text-left px-2 py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-xs"
                 >
                   <span
@@ -229,7 +245,7 @@ export default function GraphExplorerPage() {
                   className="w-24 px-1 py-1 bg-slate-700 border border-slate-600 rounded text-xs text-white"
                 >
                   {ALL_NODE_TYPES.map((t) => (
-                    <option key={t} value={t.toLowerCase()}>{t}</option>
+                    <option key={t} value={LABEL_TO_API_TYPE[t] || t.toLowerCase()}>{t}</option>
                   ))}
                 </select>
                 <input
@@ -246,7 +262,7 @@ export default function GraphExplorerPage() {
                   className="w-24 px-1 py-1 bg-slate-700 border border-slate-600 rounded text-xs text-white"
                 >
                   {ALL_NODE_TYPES.map((t) => (
-                    <option key={t} value={t.toLowerCase()}>{t}</option>
+                    <option key={t} value={LABEL_TO_API_TYPE[t] || t.toLowerCase()}>{t}</option>
                   ))}
                 </select>
                 <input

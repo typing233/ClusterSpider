@@ -125,6 +125,10 @@ REPORT_HTML_TEMPLATE = """
             <div class="stat-label">Organizations</div>
         </div>
         <div class="stat-card">
+            <div class="stat-value">{{ port_count }}</div>
+            <div class="stat-label">Open Ports</div>
+        </div>
+        <div class="stat-card">
             <div class="stat-value">{{ total_relationships }}</div>
             <div class="stat-label">Relationships</div>
         </div>
@@ -151,6 +155,9 @@ REPORT_HTML_TEMPLATE = """
         {% endif %}
         {% if ip_count > 0 %}
             <li class="severity-low">{{ ip_count }} unique IP address(es) mapped across {{ org_count }} organization(s)/ASN(s).</li>
+        {% endif %}
+        {% if port_count > 0 %}
+            <li class="severity-medium">ATTENTION: {{ port_count }} open port(s) detected. Review exposed services for unnecessary attack surface.</li>
         {% endif %}
         {% if findings|length == 0 and leak_count == 0 %}
             <li class="severity-low">No critical findings. Standard internet presence observed.</li>
@@ -250,6 +257,33 @@ REPORT_HTML_TEMPLATE = """
     </table>
     {% endif %}
 
+    <!-- Open Ports & Services -->
+    {% if host_ports %}
+    <h2>Open Ports & Services</h2>
+    <p>{{ port_count }} open port(s) discovered via TCP port scanning across {{ host_ports|length }} host(s):</p>
+    {% for host, host_port_list in host_ports.items() %}
+    <h3><code>{{ host }}</code> ({{ host_port_list|length }} port(s))</h3>
+    <table>
+        <tr><th>Port</th><th>Protocol</th><th>Service</th><th>Banner / Details</th><th>Source</th></tr>
+        {% for p in host_port_list|sort(attribute='port') %}
+        <tr>
+            <td><strong>{{ p.get('port', '-') }}</strong></td>
+            <td>{{ p.get('protocol', 'tcp') }}</td>
+            <td>
+                {% if p.get('service', 'unknown') in ['SSH', 'RDP', 'VNC', 'Telnet', 'MSSQL', 'MySQL', 'PostgreSQL', 'Redis', 'MongoDB'] %}
+                    <span class="severity-medium">{{ p.get('service', 'unknown') }}</span>
+                {% else %}
+                    {{ p.get('service', 'unknown') }}
+                {% endif %}
+            </td>
+            <td><code>{{ p.get('banner', '-')[:80] }}</code></td>
+            <td>{{ p.get('data_source', 'port_scan') }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% endfor %}
+    {% endif %}
+
     <!-- Organizations -->
     {% if orgs %}
     <h2>Associated Organizations / ASNs</h2>
@@ -277,6 +311,7 @@ REPORT_HTML_TEMPLATE = """
             <div class="graph-legend-item"><div class="legend-dot" style="background:#ec4899"></div> Certificate</div>
             <div class="graph-legend-item"><div class="legend-dot" style="background:#3b82f6"></div> Organization</div>
             <div class="graph-legend-item"><div class="legend-dot" style="background:#ef4444"></div> LeakRecord</div>
+            <div class="graph-legend-item"><div class="legend-dot" style="background:#64748b"></div> Port</div>
         </div>
         <p><strong>Node count by type:</strong></p>
         <ul class="relationship-list">
@@ -335,6 +370,7 @@ async def _generate_report_async(user_id: str, target: str, target_type: str, fo
     certs = [n for n in all_nodes if n.get("_label") == "Certificate"]
     orgs = [n for n in all_nodes if n.get("_label") == "Organization"]
     usernames = [n for n in all_nodes if n.get("_label") == "Username"]
+    ports = [n for n in all_nodes if n.get("_label") == "Port"]
 
     # Determine subdomains (domains that aren't the target itself)
     subdomains = [d for d in domains if d.get("value", "") != target.lower()]
@@ -368,6 +404,26 @@ async def _generate_report_async(user_id: str, target: str, target_type: str, fo
             ip["org_name"] = org_map[org_id].get("name", "")
             ip["asn"] = org_map[org_id].get("asn", "")
 
+    # Enrich ports: map HAS_PORT edges to connect ports back to their host
+    port_to_host: dict[str, str] = {}
+    for edge in all_edges:
+        if edge.get("type") == "HAS_PORT":
+            port_to_host[edge.get("target")] = edge.get("source")
+
+    # Build ports list with host info
+    port_map = {p.get("_id"): p for p in ports}
+    # Group ports by host IP/domain
+    host_ports: dict[str, list[dict]] = {}
+    for port in ports:
+        host_id = port_to_host.get(port.get("_id", ""))
+        # Find the host node's value
+        host_value = "unknown"
+        for n in all_nodes:
+            if n.get("_id") == host_id:
+                host_value = n.get("value", "unknown")
+                break
+        host_ports.setdefault(host_value, []).append(port)
+
     # Node and relationship counts for graph snapshot
     node_counts: dict[str, int] = {}
     for n in all_nodes:
@@ -396,6 +452,7 @@ async def _generate_report_async(user_id: str, target: str, target_type: str, fo
         leak_count=len(leaks),
         cert_count=len(certs),
         org_count=len(orgs),
+        port_count=len(ports),
         cert_expired_count=cert_expired_count,
         leaks=leaks,
         subdomains=subdomains,
@@ -403,8 +460,10 @@ async def _generate_report_async(user_id: str, target: str, target_type: str, fo
         emails=emails,
         certs=certs,
         orgs=orgs,
+        ports=ports,
+        host_ports=host_ports,
         exposed_emails=exposed_emails,
-        findings=[],  # populated by the logic above
+        findings=[],
         node_counts=node_counts,
         rel_counts=rel_counts,
     )

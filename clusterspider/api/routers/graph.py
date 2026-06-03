@@ -17,6 +17,8 @@ ENTITY_TYPE_MAP = {
     "certificate": EntityType.CERTIFICATE,
     "organization": EntityType.ORGANIZATION,
     "leak": EntityType.LEAK_RECORD,
+    "leakrecord": EntityType.LEAK_RECORD,
+    "port": EntityType.PORT,
 }
 
 

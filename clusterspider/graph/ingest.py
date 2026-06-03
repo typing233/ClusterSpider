@@ -21,6 +21,7 @@ ENTITY_TYPE_MAP = {
     "certificate": EntityType.CERTIFICATE,
     "organization": EntityType.ORGANIZATION,
     "leak": EntityType.LEAK_RECORD,
+    "port": EntityType.PORT,
 }
 
 RELATIONSHIP_RULES: list[dict] = [
@@ -55,6 +56,9 @@ RELATIONSHIP_RULES: list[dict] = [
     {"from_target": "username", "entity_type": "username", "rel": RelationType.HAS_USERNAME, "direction": "target->entity"},
     # Domain belongs to org (from whois)
     {"from_target": "domain", "entity_type": "organization", "rel": RelationType.BELONGS_TO_ORG, "direction": "target->entity"},
+    # Port scan: target has open port
+    {"from_target": "domain", "entity_type": "port", "rel": RelationType.HAS_PORT, "direction": "target->entity"},
+    {"from_target": "ip", "entity_type": "port", "rel": RelationType.HAS_PORT, "direction": "target->entity"},
 ]
 
 
@@ -103,6 +107,11 @@ class GraphIngestor:
                 module_name=result.module_name,
                 user_id=user_id,
             )
+
+            # Certificate with san_domains: create ISSUED_TO edge to each covered domain
+            if entity_label == EntityType.CERTIFICATE and entity.get("san_domains"):
+                await self._create_cert_san_edges(entity, user_id, result.module_name)
+                edges_created = True
 
             if not edges_created:
                 logger.debug(
@@ -184,6 +193,37 @@ class GraphIngestor:
             user_id=user_id,
         )
 
+    async def _create_cert_san_edges(self, cert_entity: dict, user_id: str, module_name: str):
+        """Create ISSUED_TO edges from a certificate to every domain in its SAN list."""
+        fingerprint = cert_entity.get("fingerprint", cert_entity.get("value", ""))
+        cert_key = {"fingerprint": fingerprint.lower()}
+        rel_props = {
+            "source": module_name,
+            "data_source": cert_entity.get("source", "crt.sh"),
+            "discovered_at": datetime.utcnow().isoformat(),
+        }
+
+        for domain in cert_entity["san_domains"]:
+            domain = domain.strip().lower()
+            if not domain:
+                continue
+            # Ensure the domain node exists
+            await self.repo.merge_node(
+                label=EntityType.DOMAIN,
+                properties={"value": domain},
+                user_id=user_id,
+            )
+            # Certificate -[ISSUED_TO]-> Domain
+            await self.repo.merge_relationship(
+                from_label=EntityType.CERTIFICATE,
+                from_key=cert_key,
+                to_label=EntityType.DOMAIN,
+                to_key={"value": domain},
+                rel_type=RelationType.ISSUED_TO,
+                properties=rel_props,
+                user_id=user_id,
+            )
+
     def _infer_target_label(self, target_type: str) -> EntityType:
         mapping = {
             "domain": EntityType.DOMAIN,
@@ -242,6 +282,16 @@ class GraphIngestor:
                 props["data_classes"] = entity["data_classes"]
             if "pwn_count" in entity:
                 props["pwn_count"] = entity["pwn_count"]
+        elif label == EntityType.PORT:
+            props["value"] = value
+            if "port" in entity:
+                props["port"] = entity["port"]
+            if "protocol" in entity:
+                props["protocol"] = entity["protocol"]
+            if "service" in entity:
+                props["service"] = entity["service"]
+            if "banner" in entity:
+                props["banner"] = entity["banner"]
 
         return props
 

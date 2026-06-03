@@ -63,27 +63,35 @@ class CertTransparencyModule(BaseModule):
             name_value = entry.get("name_value", "")
             cert_id = str(entry.get("id", ""))
 
+            # Parse all domains covered by this cert entry
+            entry_domains: list[str] = []
             for domain in name_value.split("\n"):
                 domain = domain.strip().lower().lstrip("*.")
-                if domain and domain != target and domain not in seen_domains:
-                    seen_domains.add(domain)
-                    entities.append({
-                        "type": "subdomain",
-                        "value": domain,
-                        "source": "crt.sh",
-                    })
+                if domain and domain.endswith(target) or domain == target:
+                    entry_domains.append(domain)
+                    if domain != target and domain not in seen_domains:
+                        seen_domains.add(domain)
+                        entities.append({
+                            "type": "subdomain",
+                            "value": domain,
+                            "source": "crt.sh",
+                        })
 
             if cert_id and cert_id not in seen_certs:
                 seen_certs.add(cert_id)
+                fingerprint = entry.get("serial_number", cert_id)
+
                 certs.append({
                     "id": cert_id,
                     "issuer": entry.get("issuer_name", ""),
                     "not_before": entry.get("not_before", ""),
                     "not_after": entry.get("not_after", ""),
                     "common_name": entry.get("common_name", ""),
+                    "san_domains": entry_domains,
                 })
 
-                fingerprint = entry.get("serial_number", cert_id)
+                # Emit cert entity with san_domains list so ingest can create
+                # ISSUED_TO edges to each covered domain
                 entities.append({
                     "type": "certificate",
                     "value": fingerprint,
@@ -91,6 +99,8 @@ class CertTransparencyModule(BaseModule):
                     "issuer": entry.get("issuer_name", ""),
                     "not_before": entry.get("not_before", ""),
                     "not_after": entry.get("not_after", ""),
+                    "san_domains": entry_domains,
+                    "san_count": len(entry_domains),
                     "source": "crt.sh",
                 })
 

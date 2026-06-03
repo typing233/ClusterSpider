@@ -8,6 +8,7 @@ from .ip_geolocation import IpGeolocationModule
 from .leak_check import LeakCheckModule
 from .github_search import GithubSearchModule
 from .social_profiles import SocialProfilesModule
+from .port_scan import PortScanModule
 
 ALL_MODULES = [
     DnsRecordsModule,
@@ -20,4 +21,5 @@ ALL_MODULES = [
     LeakCheckModule,
     GithubSearchModule,
     SocialProfilesModule,
+    PortScanModule,
 ]

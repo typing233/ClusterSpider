@@ -388,7 +388,7 @@ class GraphRepository:
 
     async def get_stats(self, user_id: str) -> dict:
         """Efficient stats using count store (index-backed)."""
-        labels = ["Domain", "IP", "Email", "Username", "Certificate", "Organization", "LeakRecord"]
+        labels = ["Domain", "IP", "Email", "Username", "Certificate", "Organization", "LeakRecord", "Port"]
         stats = {}
 
         async with self.driver.session() as session:
@@ -480,6 +480,7 @@ class GraphRepository:
             EntityType.CERTIFICATE: ["fingerprint"],
             EntityType.ORGANIZATION: ["name"],
             EntityType.LEAK_RECORD: ["breach_name"],
+            EntityType.PORT: ["value"],
         }
         return keys.get(label, ["value"])
 

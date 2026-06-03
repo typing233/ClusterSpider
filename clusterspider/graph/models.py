@@ -11,6 +11,7 @@ class EntityType(str, Enum):
     CERTIFICATE = "Certificate"
     ORGANIZATION = "Organization"
     LEAK_RECORD = "LeakRecord"
+    PORT = "Port"
 
 
 class RelationType(str, Enum):
@@ -26,6 +27,7 @@ class RelationType(str, Enum):
     NAMESERVER = "NAMESERVER"
     MAIL_EXCHANGE = "MAIL_EXCHANGE"
     FOUND_IN_REPO = "FOUND_IN_REPO"
+    HAS_PORT = "HAS_PORT"
 
 
 class NodeBase(BaseModel):
@@ -80,6 +82,14 @@ class LeakRecordNode(NodeBase):
     breach_date: str | None = None
     data_classes: list[str] = Field(default_factory=list)
     pwn_count: int | None = None
+
+
+class PortNode(NodeBase):
+    value: str  # "ip:port"
+    port: int
+    protocol: str = "tcp"
+    service: str | None = None
+    banner: str | None = None
 
 
 class GraphEdge(BaseModel):
