@@ -38,6 +38,24 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
     revoked INTEGER DEFAULT 0,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+CREATE TABLE IF NOT EXISTS scan_history (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    target TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    module_names TEXT,
+    modules_total INTEGER DEFAULT 0,
+    modules_completed INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    finished_at TEXT,
+    result_summary TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scan_history_user ON scan_history(user_id, created_at);
 """
 
 
@@ -136,6 +154,59 @@ class UserRepository:
         )
         self.conn.commit()
         return cursor.rowcount > 0
+
+    def create_scan_record(
+        self, user_id: str, task_id: str, target: str, target_type: str, module_names: list[str] | None = None
+    ) -> str:
+        scan_id = str(uuid.uuid4())
+        now = datetime.utcnow().isoformat()
+        import json
+        modules_json = json.dumps(module_names) if module_names else None
+        self.conn.execute(
+            "INSERT INTO scan_history (id, user_id, task_id, target, target_type, status, module_names, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?)",
+            (scan_id, user_id, task_id, target, target_type, modules_json, now),
+        )
+        self.conn.commit()
+        return scan_id
+
+    def update_scan_status(self, task_id: str, status: str, modules_total: int = 0,
+                           modules_completed: int = 0, result_summary: str | None = None):
+        import json
+        fields = ["status = ?"]
+        params: list = [status]
+        if modules_total:
+            fields.append("modules_total = ?")
+            params.append(modules_total)
+        if modules_completed:
+            fields.append("modules_completed = ?")
+            params.append(modules_completed)
+        if result_summary:
+            fields.append("result_summary = ?")
+            params.append(result_summary)
+        if status in ("COMPLETED", "FAILED"):
+            fields.append("finished_at = ?")
+            params.append(datetime.utcnow().isoformat())
+        params.append(task_id)
+        self.conn.execute(
+            f"UPDATE scan_history SET {', '.join(fields)} WHERE task_id = ?",
+            params,
+        )
+        self.conn.commit()
+
+    def get_scan_history(self, user_id: str, limit: int = 50, offset: int = 0) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM scan_history WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (user_id, limit, offset),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_scan_by_task_id(self, task_id: str, user_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM scan_history WHERE task_id = ? AND user_id = ?",
+            (task_id, user_id),
+        ).fetchone()
+        return dict(row) if row else None
 
     def _row_to_user(self, row) -> User:
         return User(

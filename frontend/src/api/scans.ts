@@ -9,6 +9,11 @@ export async function createScan(target: string, targetType: string, moduleNames
   return res.data
 }
 
+export async function listScans(limit: number = 50, offset: number = 0) {
+  const res = await api.get('/scans', { params: { limit, offset } })
+  return res.data
+}
+
 export async function getScan(taskId: string) {
   const res = await api.get(`/scans/${taskId}`)
   return res.data

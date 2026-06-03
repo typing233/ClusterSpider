@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 
 import redis
@@ -10,6 +11,7 @@ from clusterspider.modules import ALL_MODULES
 from clusterspider.graph.driver import get_driver, close_driver
 from clusterspider.graph.ingest import GraphIngestor
 from clusterspider.storage.freshness import FreshnessTracker
+from clusterspider.auth.models import UserRepository
 
 logger = logging.getLogger(__name__)
 
@@ -17,16 +19,37 @@ logger = logging.getLogger(__name__)
 def _publish_progress(task_id: str, data: dict):
     try:
         r = redis.from_url(settings.redis_url)
-        import json
         r.publish(f"scan_progress:{task_id}", json.dumps(data))
         r.close()
     except Exception as e:
         logger.debug(f"Failed to publish progress: {e}")
 
 
+def _update_scan_db(task_id: str, status: str, modules_total: int = 0,
+                    modules_completed: int = 0, result_summary: str | None = None):
+    try:
+        repo = UserRepository()
+        repo.update_scan_status(task_id, status, modules_total, modules_completed, result_summary)
+        repo.close()
+    except Exception as e:
+        logger.debug(f"Failed to update scan DB: {e}")
+
+
 @celery_app.task(bind=True, name="clusterspider.workers.scan_tasks.run_scan")
 def run_scan(self, target: str, target_type: str, user_id: str, module_names: list[str] | None = None):
-    return asyncio.run(_run_scan_async(self, target, target_type, user_id, module_names))
+    _update_scan_db(self.request.id, "STARTED")
+    try:
+        result = asyncio.run(_run_scan_async(self, target, target_type, user_id, module_names))
+        _update_scan_db(
+            self.request.id, "COMPLETED",
+            modules_total=result.get("modules_total", 0),
+            modules_completed=result.get("modules_completed", 0),
+            result_summary=json.dumps(result.get("results", [])),
+        )
+        return result
+    except Exception as e:
+        _update_scan_db(self.request.id, "FAILED", result_summary=str(e))
+        raise
 
 
 async def _run_scan_async(task, target: str, target_type: str, user_id: str, module_names: list[str] | None):
@@ -56,7 +79,8 @@ async def _run_scan_async(task, target: str, target_type: str, user_id: str, mod
     })
 
     for module in modules:
-        if freshness.is_fresh(module.name, target_type, target):
+        # Freshness check is per-user — another user scanning same target won't affect this user
+        if freshness.is_fresh(module.name, target_type, target, user_id=user_id):
             completed += 1
             results_summary.append({"module": module.name, "status": "skipped_fresh"})
             continue
@@ -73,7 +97,7 @@ async def _run_scan_async(task, target: str, target_type: str, user_id: str, mod
 
         if result.success:
             await ingestor.ingest_result(result, user_id)
-            freshness.mark_collected(module.name, target_type, target)
+            freshness.mark_collected(module.name, target_type, target, user_id=user_id)
             results_summary.append({"module": module.name, "status": "success", "entities": len(result.entities)})
         else:
             results_summary.append({"module": module.name, "status": "failed", "error": result.error})

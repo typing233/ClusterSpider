@@ -10,14 +10,15 @@ logger = logging.getLogger(__name__)
 FRESHNESS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS collection_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
     source TEXT NOT NULL,
     entity_type TEXT NOT NULL,
     entity_value TEXT NOT NULL,
     last_collected_at TEXT NOT NULL,
-    UNIQUE(source, entity_type, entity_value)
+    UNIQUE(user_id, source, entity_type, entity_value)
 );
 CREATE INDEX IF NOT EXISTS idx_collection_log_lookup
-    ON collection_log(source, entity_type, entity_value);
+    ON collection_log(user_id, source, entity_type, entity_value);
 """
 
 
@@ -29,11 +30,11 @@ class FreshnessTracker:
         self.conn.executescript(FRESHNESS_SCHEMA)
         self.conn.commit()
 
-    def is_fresh(self, source: str, entity_type: str, entity_value: str) -> bool:
+    def is_fresh(self, source: str, entity_type: str, entity_value: str, user_id: str) -> bool:
         row = self.conn.execute(
             "SELECT last_collected_at FROM collection_log "
-            "WHERE source = ? AND entity_type = ? AND entity_value = ?",
-            (source, entity_type, entity_value.lower()),
+            "WHERE user_id = ? AND source = ? AND entity_type = ? AND entity_value = ?",
+            (user_id, source, entity_type, entity_value.lower()),
         ).fetchone()
 
         if not row:
@@ -43,22 +44,22 @@ class FreshnessTracker:
         threshold = datetime.utcnow() - timedelta(hours=settings.freshness_window_hours)
         return last > threshold
 
-    def mark_collected(self, source: str, entity_type: str, entity_value: str):
+    def mark_collected(self, source: str, entity_type: str, entity_value: str, user_id: str):
         now = datetime.utcnow().isoformat()
         self.conn.execute(
-            "INSERT INTO collection_log (source, entity_type, entity_value, last_collected_at) "
-            "VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(source, entity_type, entity_value) "
+            "INSERT INTO collection_log (user_id, source, entity_type, entity_value, last_collected_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id, source, entity_type, entity_value) "
             "DO UPDATE SET last_collected_at = excluded.last_collected_at",
-            (source, entity_type, entity_value.lower(), now),
+            (user_id, source, entity_type, entity_value.lower(), now),
         )
         self.conn.commit()
 
-    def get_last_collected(self, source: str, entity_type: str, entity_value: str) -> datetime | None:
+    def get_last_collected(self, source: str, entity_type: str, entity_value: str, user_id: str) -> datetime | None:
         row = self.conn.execute(
             "SELECT last_collected_at FROM collection_log "
-            "WHERE source = ? AND entity_type = ? AND entity_value = ?",
-            (source, entity_type, entity_value.lower()),
+            "WHERE user_id = ? AND source = ? AND entity_type = ? AND entity_value = ?",
+            (user_id, source, entity_type, entity_value.lower()),
         ).fetchone()
         if row:
             return datetime.fromisoformat(row["last_collected_at"])

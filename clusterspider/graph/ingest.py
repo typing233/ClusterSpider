@@ -23,18 +23,39 @@ ENTITY_TYPE_MAP = {
     "leak": EntityType.LEAK_RECORD,
 }
 
-RELATIONSHIP_MAP = {
-    ("domain", "ip"): RelationType.RESOLVES_TO,
-    ("domain", "subdomain"): RelationType.HAS_SUBDOMAIN,
-    ("domain", "nameserver"): RelationType.NAMESERVER,
-    ("domain", "email"): RelationType.REGISTERED_BY,
-    ("ip", "domain"): RelationType.REVERSE_DNS,
-    ("certificate", "domain"): RelationType.ISSUED_TO,
-    ("email", "leak"): RelationType.APPEARS_IN,
-    ("email", "username"): RelationType.HAS_USERNAME,
-    ("ip", "organization"): RelationType.BELONGS_TO_ASN,
-    ("domain", "organization"): RelationType.BELONGS_TO_ORG,
-}
+RELATIONSHIP_RULES: list[dict] = [
+    # DNS: domain resolves to IP
+    {"from_target": "domain", "entity_type": "ip", "rel": RelationType.RESOLVES_TO, "direction": "target->entity"},
+    {"from_target": "domain", "entity_type": "ipv6", "rel": RelationType.RESOLVES_TO, "direction": "target->entity"},
+    # DNS: domain has subdomain
+    {"from_target": "domain", "entity_type": "subdomain", "rel": RelationType.HAS_SUBDOMAIN, "direction": "target->entity"},
+    # DNS: domain nameserver
+    {"from_target": "domain", "entity_type": "nameserver", "rel": RelationType.NAMESERVER, "direction": "target->entity"},
+    # DNS MX: domain has mail exchange
+    {"from_target": "domain", "entity_type": "domain", "rel": RelationType.MAIL_EXCHANGE, "direction": "target->entity", "source_filter": "dns_mx"},
+    # WHOIS: domain registered by email
+    {"from_target": "domain", "entity_type": "email", "rel": RelationType.REGISTERED_BY, "direction": "target->entity"},
+    # Reverse DNS: IP -> domain
+    {"from_target": "ip", "entity_type": "domain", "rel": RelationType.REVERSE_DNS, "direction": "target->entity"},
+    # Certificate transparency: certificate ISSUED_TO domain (cert -> domain)
+    {"from_target": "domain", "entity_type": "certificate", "rel": RelationType.ISSUED_TO, "direction": "entity->target"},
+    # Certificate transparency: discovered subdomain via cert
+    {"from_target": "domain", "entity_type": "subdomain", "rel": RelationType.HAS_SUBDOMAIN, "direction": "target->entity", "module_filter": "cert_transparency"},
+    # IP geolocation: IP belongs to ASN/org
+    {"from_target": "ip", "entity_type": "organization", "rel": RelationType.BELONGS_TO_ASN, "direction": "target->entity"},
+    # Leak check: email appears in breach
+    {"from_target": "email", "entity_type": "leak", "rel": RelationType.APPEARS_IN, "direction": "target->entity"},
+    # Leak check: domain-level scan discovers leaks (domain -> leak as domain exposure)
+    {"from_target": "domain", "entity_type": "leak", "rel": RelationType.APPEARS_IN, "direction": "target->entity"},
+    # GitHub search: entities found in repos
+    {"from_target": "domain", "entity_type": "email", "rel": RelationType.FOUND_IN_REPO, "direction": "target->entity", "module_filter": "github_search"},
+    {"from_target": "domain", "entity_type": "domain", "rel": RelationType.FOUND_IN_REPO, "direction": "target->entity", "module_filter": "github_search"},
+    {"from_target": "email", "entity_type": "domain", "rel": RelationType.FOUND_IN_REPO, "direction": "target->entity", "module_filter": "github_search"},
+    # Social profiles: email has username
+    {"from_target": "username", "entity_type": "username", "rel": RelationType.HAS_USERNAME, "direction": "target->entity"},
+    # Domain belongs to org (from whois)
+    {"from_target": "domain", "entity_type": "organization", "rel": RelationType.BELONGS_TO_ORG, "direction": "target->entity"},
+]
 
 
 class GraphIngestor:
@@ -72,23 +93,85 @@ class GraphIngestor:
                 user_id=user_id,
             )
 
-            rel_type = self._resolve_relationship(result.target_type, entity_type_str)
-            if rel_type:
-                from_label = target_label
-                from_key = self._node_key(target_label, target_value)
-                to_key = self._node_key(entity_label, entity_value, entity)
+            # Find all matching relationship rules and create edges
+            edges_created = await self._create_edges_for_entity(
+                target_label=target_label,
+                target_value=target_value,
+                entity_label=entity_label,
+                entity=entity,
+                entity_type_str=entity_type_str,
+                module_name=result.module_name,
+                user_id=user_id,
+            )
 
-                await self.repo.merge_relationship(
-                    from_label=from_label,
-                    from_key=from_key,
-                    to_label=entity_label,
-                    to_key=to_key,
-                    rel_type=rel_type,
-                    properties={"source": result.module_name, "discovered_at": datetime.utcnow().isoformat()},
-                    user_id=user_id,
+            if not edges_created:
+                logger.debug(
+                    f"No relationship rule matched: target_type={result.target_type}, "
+                    f"entity_type={entity_type_str}, module={result.module_name}"
                 )
 
-        logger.info(f"Ingested {len(result.entities)} entities from {result.module_name}")
+        logger.info(f"Ingested {len(result.entities)} entities from {result.module_name} for user {user_id}")
+
+    async def _create_edges_for_entity(
+        self,
+        target_label: EntityType,
+        target_value: str,
+        entity_label: EntityType,
+        entity: dict,
+        entity_type_str: str,
+        module_name: str,
+        user_id: str,
+    ) -> bool:
+        target_type_str = self._label_to_target_type(target_label)
+        entity_value = entity.get("value", "").strip().lower()
+        created = False
+
+        for rule in RELATIONSHIP_RULES:
+            if rule["from_target"] != target_type_str:
+                continue
+            if rule["entity_type"] != entity_type_str:
+                continue
+            if "module_filter" in rule and rule["module_filter"] != module_name:
+                continue
+            if "source_filter" in rule:
+                entity_source = entity.get("source", "")
+                if rule["source_filter"] != entity_source:
+                    continue
+
+            target_key = self._node_key(target_label, target_value)
+            entity_key = self._node_key(entity_label, entity_value, entity)
+
+            rel_props = {
+                "source": module_name,
+                "discovered_at": datetime.utcnow().isoformat(),
+            }
+            if entity.get("source"):
+                rel_props["data_source"] = entity["source"]
+
+            if rule["direction"] == "target->entity":
+                await self.repo.merge_relationship(
+                    from_label=target_label,
+                    from_key=target_key,
+                    to_label=entity_label,
+                    to_key=entity_key,
+                    rel_type=rule["rel"],
+                    properties=rel_props,
+                    user_id=user_id,
+                )
+            else:
+                # entity->target (e.g., Certificate ISSUED_TO Domain)
+                await self.repo.merge_relationship(
+                    from_label=entity_label,
+                    from_key=entity_key,
+                    to_label=target_label,
+                    to_key=target_key,
+                    rel_type=rule["rel"],
+                    properties=rel_props,
+                    user_id=user_id,
+                )
+            created = True
+
+        return created
 
     async def ingest_edge(self, edge: GraphEdge, user_id: str):
         await self.repo.merge_relationship(
@@ -110,9 +193,17 @@ class GraphIngestor:
         }
         return mapping.get(target_type, EntityType.DOMAIN)
 
-    def _resolve_relationship(self, target_type: str, entity_type: str) -> RelationType | None:
-        key = (target_type, entity_type)
-        return RELATIONSHIP_MAP.get(key)
+    def _label_to_target_type(self, label: EntityType) -> str:
+        mapping = {
+            EntityType.DOMAIN: "domain",
+            EntityType.IP: "ip",
+            EntityType.EMAIL: "email",
+            EntityType.USERNAME: "username",
+            EntityType.CERTIFICATE: "certificate",
+            EntityType.ORGANIZATION: "organization",
+            EntityType.LEAK_RECORD: "leak",
+        }
+        return mapping.get(label, "domain")
 
     def _build_node_props(self, label: EntityType, entity: dict) -> dict:
         value = entity.get("value", "").strip().lower()
@@ -135,27 +226,35 @@ class GraphIngestor:
             for field in ("serial", "issuer", "not_before", "not_after"):
                 if field in entity:
                     props[field] = entity[field]
+            if "san_count" in entity:
+                props["san_count"] = entity["san_count"]
         elif label == EntityType.ORGANIZATION:
             props["name"] = value
             if "asn" in entity:
                 props["asn"] = entity["asn"]
+            if "description" in entity:
+                props["description"] = entity["description"]
         elif label == EntityType.LEAK_RECORD:
             props["breach_name"] = value
             if "breach_date" in entity:
                 props["breach_date"] = entity["breach_date"]
             if "data_classes" in entity:
                 props["data_classes"] = entity["data_classes"]
+            if "pwn_count" in entity:
+                props["pwn_count"] = entity["pwn_count"]
 
         return props
 
     def _node_key(self, label: EntityType, value: str, entity: dict | None = None) -> dict:
         if label == EntityType.CERTIFICATE:
             fp = entity.get("fingerprint", value) if entity else value
-            return {"fingerprint": fp}
+            return {"fingerprint": fp.lower()}
         elif label == EntityType.ORGANIZATION:
-            return {"name": value.lower()}
+            name = entity.get("value", value) if entity else value
+            return {"name": name.lower()}
         elif label == EntityType.LEAK_RECORD:
-            return {"breach_name": value.lower()}
+            bn = entity.get("breach_name", value) if entity else value
+            return {"breach_name": bn.lower()}
         elif label == EntityType.USERNAME:
             platform = entity.get("platform", "unknown") if entity else "unknown"
             return {"value": value.lower(), "platform": platform}

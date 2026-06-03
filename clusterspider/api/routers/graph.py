@@ -84,10 +84,11 @@ async def shortest_path(
 async def search_nodes(
     q: str = Query(..., min_length=2),
     limit: int = Query(default=20, ge=1, le=100),
+    node_type: str | None = Query(default=None),
     user: User = Depends(get_current_user),
     repo: GraphRepository = Depends(get_graph_repo),
 ):
-    results = await repo.search_nodes(q, user.id, limit=limit)
+    results = await repo.search_nodes(q, user.id, limit=limit, node_type=node_type)
     return {"results": results, "total": len(results)}
 
 
@@ -98,3 +99,23 @@ async def graph_stats(
 ):
     stats = await repo.get_stats(user.id)
     return stats
+
+
+@router.get("/hubs")
+async def get_hub_nodes(
+    min_degree: int = Query(default=5, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    user: User = Depends(get_current_user),
+    repo: GraphRepository = Depends(get_graph_repo),
+):
+    results = await repo.get_high_degree_nodes(user.id, min_degree=min_degree, limit=limit)
+    return {"hubs": results, "total": len(results)}
+
+
+@router.delete("/data")
+async def delete_user_data(
+    user: User = Depends(get_current_user),
+    repo: GraphRepository = Depends(get_graph_repo),
+):
+    await repo.delete_user_data(user.id)
+    return {"detail": "All graph data deleted"}
