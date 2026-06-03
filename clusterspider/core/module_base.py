@@ -8,6 +8,10 @@ from typing import Any
 class TargetType(Enum):
     DOMAIN = "domain"
     IP = "ip"
+    EMAIL = "email"
+    USERNAME = "username"
+    CERTIFICATE = "certificate"
+    ORGANIZATION = "organization"
 
 
 @dataclass

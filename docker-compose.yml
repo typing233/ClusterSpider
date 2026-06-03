@@ -1,0 +1,85 @@
+version: "3.9"
+
+services:
+  neo4j:
+    image: neo4j:5-community
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/${CS_NEO4J_PASSWORD:-changeme}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_server_memory_heap_max__size: "1G"
+      NEO4J_server_memory_pagecache_size: "512M"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      CS_NEO4J_URI: bolt://neo4j:7687
+      CS_REDIS_URL: redis://redis:6379/0
+      CS_CELERY_BROKER_URL: redis://redis:6379/1
+      CS_CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn clusterspider.api.app:app --host 0.0.0.0 --port 8000 --workers 2
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    env_file:
+      - .env
+    environment:
+      CS_NEO4J_URI: bolt://neo4j:7687
+      CS_REDIS_URL: redis://redis:6379/0
+      CS_CELERY_BROKER_URL: redis://redis:6379/1
+      CS_CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A clusterspider.workers.celery_app worker -Q scans,reports --loglevel=info -c 4
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+
+volumes:
+  neo4j_data:
+  redis_data:
