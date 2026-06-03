@@ -1,9 +1,12 @@
 import asyncio
+import logging
+
 import dns.resolver
 import dns.rdatatype
 
 from clusterspider.core.module_base import BaseModule, ModuleResult, TargetType
 
+logger = logging.getLogger(__name__)
 
 RECORD_TYPES = ["A", "AAAA", "MX", "NS", "TXT", "CNAME", "SOA"]
 
@@ -24,6 +27,7 @@ class DnsRecordsModule(BaseModule):
     async def execute(self, target: str, target_type: TargetType) -> ModuleResult:
         records = {}
         entities = []
+        errors = []
         resolver = dns.resolver.Resolver()
         resolver.timeout = 10
         resolver.lifetime = 10
@@ -52,16 +56,51 @@ class DnsRecordsModule(BaseModule):
                     for ns in record_list:
                         entities.append({"type": "nameserver", "value": ns.rstrip("."), "source": "dns_ns"})
 
-            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers):
+            except dns.resolver.NXDOMAIN:
+                err = f"Domain '{target}' does not exist (NXDOMAIN)"
+                logger.warning(f"[dns_records] {err}")
+                return ModuleResult(
+                    module_name=self.name,
+                    target=target,
+                    target_type=target_type.value,
+                    success=False,
+                    data={"records": {}},
+                    error=err,
+                )
+            except dns.resolver.NoNameservers as e:
+                err = f"No nameservers available for '{target}': {e}"
+                logger.warning(f"[dns_records] {err}")
+                errors.append(f"{rtype}: {err}")
+            except dns.resolver.NoAnswer:
                 continue
-            except Exception:
-                continue
+            except dns.resolver.Timeout:
+                err = f"DNS query timeout for {rtype} record"
+                logger.warning(f"[dns_records] {err}")
+                errors.append(f"{rtype}: timeout")
+            except Exception as e:
+                err = f"Unexpected error querying {rtype}: {e}"
+                logger.warning(f"[dns_records] {err}")
+                errors.append(f"{rtype}: {e}")
+
+        if not records:
+            error_msg = "No DNS records resolved"
+            if errors:
+                error_msg += f"; errors: {'; '.join(errors)}"
+            logger.error(f"[dns_records] Failed for {target}: {error_msg}")
+            return ModuleResult(
+                module_name=self.name,
+                target=target,
+                target_type=target_type.value,
+                success=False,
+                data={"records": {}},
+                error=error_msg,
+            )
 
         return ModuleResult(
             module_name=self.name,
             target=target,
             target_type=target_type.value,
             success=True,
-            data={"records": records},
+            data={"records": records, "partial_errors": errors if errors else None},
             entities=entities,
         )
